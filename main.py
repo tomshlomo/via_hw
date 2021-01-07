@@ -45,6 +45,7 @@ def add_edge(problem: pywrapgraph.SimpleMinCostFlow, edge: Edge):
 
 
 def solve(req_file, dur_file, num_cars):
+    # todo: single pass on requests
     req_df, duration_mat = load(req_file, dur_file)
 
     depo_source_node = Node(num_cars)
