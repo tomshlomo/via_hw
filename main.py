@@ -1,70 +1,104 @@
-import pandas as pd
 import numpy as np
 from ortools.graph import pywrapgraph
-from data import req, dur_mat
 
-# create all nodes
-req['start_node_id'] = range(len(req))
-req['end_node_id'] = range(len(req), 2*len(req))
-depo_start_node_id = 2*len(req)
-depo_end_node_id = depo_start_node_id + 1
+from data import load
 
-# create all edges between rides
-edges = []
-# edges = pd.DataFrame(columns=['start_node_id', 'end_node_id', 'cost'])
 
-for source in range(len(req)):
-    for target in range(len(req)):
-        if req['t_end'][source] + dur_mat[req['dropoff'][source], req['pickup'][target]] <= req['t_start'][target]:
-            # edges.append({'start_node': req['end_node_id'][source],
-            #               'end_node': req['start_node_id'][target],
-            #               'cost': req['t_start'][target] - req['t_end'][source]})
-            edges.append([req['end_node_id'][source],
-                          req['start_node_id'][target],
-                          req['t_start'][target] - req['t_end'][source],
-                          source, target])
-# create edges from depo requests
-for i in range(len(req)):
-    edges.append([depo_start_node_id,
-                  req['start_node_id'][i],
-                  dur_mat[0, req['pickup'][i]],
-                  -1, i])
-    edges.append([req['end_node_id'][i],
-                  depo_end_node_id,
-                  dur_mat[req['dropoff'][i], 0],
-                  i, -1])
+class Node:
+    def __init__(self, supply: int):
+        self.supply: int = int(supply)
+        self.id = None
 
-edges = pd.DataFrame(edges, columns=['start_node_id', 'end_node_id', 'cost', 'from_request', 'to_request'])
 
-# solve
-min_cost_flow = pywrapgraph.SimpleMinCostFlow()
+class Edge:
+    def __init__(self, source_node: Node, target_node: Node, capacity: int, unit_cost: int):
+        self.source_node: Node = source_node
+        self.target_node: Node = target_node
+        self.capacity: int = int(capacity)
+        self.unit_cost: int = int(unit_cost)
 
-for i in range(len(edges)):
-    min_cost_flow.AddArcWithCapacityAndUnitCost(int(edges['start_node_id'][i]),
-                                                int(edges['end_node_id'][i]),
-                                                1,
-                                                int(edges['cost'][i]))
 
-for i in range(len(req)):
-    min_cost_flow.SetNodeSupply(int(req['start_node_id'][i]), -1)
-    min_cost_flow.SetNodeSupply(int(req['end_node_id'][i]), 1)
+class Request:
+    def __init__(self, pickup: int, dropoff: int, request_id: int, time: int, depo_source_node: Node,
+                 depo_sink_node: Node, duration_mat: np.ndarray):
+        self.pickup: int = pickup
+        self.dropoff: int = dropoff
+        self.time: int = time
+        self.request_id: int = request_id
+        self.pickup_node: Node = Node(-1)
+        self.dropoff_node: Node = Node(1)
+        self.from_depo_edge: Edge = Edge(depo_source_node, self.pickup_node, 1, duration_mat[0, self.pickup])
+        self.to_depo_edge: Edge = Edge(self.dropoff_node, depo_sink_node, 1, duration_mat[self.dropoff, 0])
+        self.duration: int = int(duration_mat[self.pickup, self.dropoff])
 
-min_cost_flow.SetNodeSupply(depo_start_node_id, 20)
-min_cost_flow.SetNodeSupply(depo_end_node_id, -20)
 
-if min_cost_flow.Solve() == min_cost_flow.OPTIMAL:
-    print('Minimum cost:', min_cost_flow.OptimalCost())
-    print('')
-    print('  Arc    Flow / Capacity  Cost')
-    for i in range(min_cost_flow.NumArcs()):
-        cost = min_cost_flow.Flow(i) * min_cost_flow.UnitCost(i)
-        print('%1s -> %1s   %3s  / %3s       %3s' % (
-            min_cost_flow.Tail(i),
-            min_cost_flow.Head(i),
-            min_cost_flow.Flow(i),
-            min_cost_flow.Capacity(i),
-            cost))
-else:
-    print('There was an issue with the min cost flow input.')
+def add_node(problem: pywrapgraph.SimpleMinCostFlow, node: Node):
+    node.id = problem.NumNodes()
+    problem.SetNodeSupply(node.id, node.supply)
 
-pass
+
+def add_edge(problem: pywrapgraph.SimpleMinCostFlow, edge: Edge):
+    problem.AddArcWithCapacityAndUnitCost(edge.source_node.id,
+                                          edge.target_node.id,
+                                          edge.capacity,
+                                          edge.unit_cost)
+
+
+def solve(req_file, dur_file, num_cars):
+    req_df, duration_mat = load(req_file, dur_file)
+
+    depo_source_node = Node(num_cars)
+    depo_sink_node = Node(-num_cars)
+    depo2depo = Edge(depo_source_node, depo_sink_node, num_cars, 0)
+
+    reqs = []
+    for i in range(len(req_df)):
+        reqs.append(Request(req_df['pickup'][i], req_df['dropoff'][i], i, req_df['t_start'][i], depo_source_node,
+                            depo_sink_node, duration_mat))
+
+    # todo: find legal req2req without loops
+    req2req = {}
+    for req_from in reqs:
+        for req_to in reqs:
+            delta_time = req_to.time - req_from.time - req_from.duration
+            drive = duration_mat[req_from.dropoff, req_to.pickup]
+            if delta_time >= drive:
+                req2req[(req_from, req_to)] = Edge(req_from.dropoff_node, req_to.pickup_node, 1, delta_time)
+
+    problem = pywrapgraph.SimpleMinCostFlow()
+    for node in [depo_source_node, depo_sink_node]:
+        add_node(problem, node)
+
+    add_edge(problem, depo2depo)
+    for req in reqs:
+        for node in [req.pickup_node, req.dropoff_node]:
+            add_node(problem, node)
+        add_edge(problem, req.from_depo_edge)
+        add_edge(problem, req.to_depo_edge)
+
+    for edge in req2req.values():
+        add_edge(problem, edge)
+
+    sol = problem.Solve()
+
+    if sol == problem.OPTIMAL:
+        print('Minimum cost:', problem.OptimalCost())
+        print('')
+        print('  Arc    Flow / Capacity  Cost  Supply')
+        for i in range(problem.NumArcs()):
+            if problem.Flow(i) > 0:
+                cost = problem.Flow(i) * problem.UnitCost(i)
+                print('%1s -> %1s   %3s  / %3s       %3s    %1s -> %1s' % (
+                    problem.Tail(i),
+                    problem.Head(i),
+                    problem.Flow(i),
+                    problem.Capacity(i),
+                    cost,
+                    problem.Supply(problem.Tail(i)),
+                    problem.Supply(problem.Head(i))))
+    else:
+        print('no solution found')
+
+
+# solve('requests_toy.csv', 'durations_toy.csv', 2)
+solve('requests.csv', 'durations.csv', 29)
