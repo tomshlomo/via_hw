@@ -5,57 +5,52 @@ from data import load
 
 
 class Node:
-    def __init__(self, supply: int):
+    def __init__(self, supply: int, problem: pywrapgraph.SimpleMinCostFlow):
         self.supply: int = int(supply)
-        self.id = None
+        self.id = problem.NumNodes()
+        problem.SetNodeSupply(self.id, self.supply)
 
 
 class Edge:
-    def __init__(self, source_node: Node, target_node: Node, capacity: int, unit_cost: int):
+    def __init__(self, source_node: Node, target_node: Node, capacity: int, unit_cost: int,
+                 problem: pywrapgraph.SimpleMinCostFlow):
         self.source_node: Node = source_node
         self.target_node: Node = target_node
         self.capacity: int = int(capacity)
         self.unit_cost: int = int(unit_cost)
+        problem.AddArcWithCapacityAndUnitCost(self.source_node.id,
+                                              self.target_node.id,
+                                              self.capacity,
+                                              self.unit_cost)
 
 
 class Request:
     def __init__(self, pickup: int, dropoff: int, request_id: int, time: int, depo_source_node: Node,
-                 depo_sink_node: Node, duration_mat: np.ndarray):
+                 depo_sink_node: Node, duration_mat: np.ndarray, problem: pywrapgraph.SimpleMinCostFlow):
         self.pickup: int = pickup
         self.dropoff: int = dropoff
         self.time: int = time
         self.request_id: int = request_id
-        self.pickup_node: Node = Node(-1)
-        self.dropoff_node: Node = Node(1)
-        self.from_depo_edge: Edge = Edge(depo_source_node, self.pickup_node, 1, duration_mat[0, self.pickup])
-        self.to_depo_edge: Edge = Edge(self.dropoff_node, depo_sink_node, 1, duration_mat[self.dropoff, 0])
+        self.pickup_node: Node = Node(-1, problem)
+        self.dropoff_node: Node = Node(1, problem)
+        self.from_depo_edge: Edge = Edge(depo_source_node, self.pickup_node, 1, duration_mat[0, self.pickup], problem)
+        self.to_depo_edge: Edge = Edge(self.dropoff_node, depo_sink_node, 1, duration_mat[self.dropoff, 0], problem)
         self.duration: int = int(duration_mat[self.pickup, self.dropoff])
-
-
-def add_node(problem: pywrapgraph.SimpleMinCostFlow, node: Node):
-    node.id = problem.NumNodes()
-    problem.SetNodeSupply(node.id, node.supply)
-
-
-def add_edge(problem: pywrapgraph.SimpleMinCostFlow, edge: Edge):
-    problem.AddArcWithCapacityAndUnitCost(edge.source_node.id,
-                                          edge.target_node.id,
-                                          edge.capacity,
-                                          edge.unit_cost)
 
 
 def solve(req_file, dur_file, num_cars):
     # todo: single pass on requests
     req_df, duration_mat = load(req_file, dur_file)
+    problem = pywrapgraph.SimpleMinCostFlow()
 
-    depo_source_node = Node(num_cars)
-    depo_sink_node = Node(-num_cars)
-    depo2depo = Edge(depo_source_node, depo_sink_node, num_cars, 0)
+    depo_source_node = Node(num_cars, problem)
+    depo_sink_node = Node(-num_cars, problem)
+    depo2depo = Edge(depo_source_node, depo_sink_node, num_cars, 0, problem)
 
     reqs = []
     for i in range(len(req_df)):
         reqs.append(Request(req_df['pickup'][i], req_df['dropoff'][i], i, req_df['t_start'][i], depo_source_node,
-                            depo_sink_node, duration_mat))
+                            depo_sink_node, duration_mat, problem))
 
     # todo: find legal req2req without loops
     req2req = {}
@@ -64,21 +59,7 @@ def solve(req_file, dur_file, num_cars):
             delta_time = req_to.time - req_from.time - req_from.duration
             drive = duration_mat[req_from.dropoff, req_to.pickup]
             if delta_time >= drive:
-                req2req[(req_from, req_to)] = Edge(req_from.dropoff_node, req_to.pickup_node, 1, delta_time)
-
-    problem = pywrapgraph.SimpleMinCostFlow()
-    for node in [depo_source_node, depo_sink_node]:
-        add_node(problem, node)
-
-    add_edge(problem, depo2depo)
-    for req in reqs:
-        for node in [req.pickup_node, req.dropoff_node]:
-            add_node(problem, node)
-        add_edge(problem, req.from_depo_edge)
-        add_edge(problem, req.to_depo_edge)
-
-    for edge in req2req.values():
-        add_edge(problem, edge)
+                req2req[(req_from, req_to)] = Edge(req_from.dropoff_node, req_to.pickup_node, 1, delta_time, problem)
 
     sol = problem.Solve()
 
