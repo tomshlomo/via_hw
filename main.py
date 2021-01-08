@@ -63,12 +63,12 @@ def solve(req_file, dur_file, num_cars):
     sol = problem.Solve()
 
     if sol == problem.OPTIMAL:
-        print('Minimum cost:', problem.OptimalCost())
+        print(f'{num_cars} cars: minimum cost = ', problem.OptimalCost())
         routes = get_routes(problem, reqs, req2req)
         print(f'{problem.Flow(depo2depo.idx)} cars stay in depo.')
     else:
         routes = None
-        print('no solution found')
+        print(f'{num_cars} cars: No solution found.')
     return routes
 
 
@@ -94,7 +94,3 @@ def get_routes(problem: pywrapgraph.SimpleMinCostFlow, reqs: List[Request], req2
             duration = time_end - time_start
             print(f'route {len(routes)}: length = {len(route)}, duration = {duration}, sequence = {string}')
     return routes
-
-
-# solve('requests_toy.csv', 'durations_toy.csv', 1)
-solve('requests.csv', 'durations.csv', 29)
